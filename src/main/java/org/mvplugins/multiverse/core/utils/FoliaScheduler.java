@@ -1,6 +1,7 @@
 package org.mvplugins.multiverse.core.utils;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 import io.papermc.lib.PaperLib;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
@@ -236,6 +237,43 @@ public final class FoliaScheduler {
     }
 
     /**
+     * Runs a repeating task on the entity's owning region thread (Folia) or main server thread (non-Folia).
+     * The consumer receives a {@link TaskHandle} that can cancel the repeating task from inside the callback.
+     *
+     * @param plugin            The owning plugin.
+     * @param entity            The target entity.
+     * @param task              Consumer invoked each tick with its cancellable {@link TaskHandle}.
+     * @param retired           Optional callback invoked if the entity retires/disconnects before completion.
+     * @param initialDelayTicks Initial delay in ticks (clamped to at least 1 on Folia).
+     * @param periodTicks       Period in ticks (clamped to at least 1 on Folia).
+     * @return A cancellable {@link TaskHandle}.
+     */
+    public static @NotNull TaskHandle runAtEntityFixedRate(
+            @NotNull Plugin plugin,
+            @NotNull Entity entity,
+            @NotNull Consumer<TaskHandle> task,
+            @Nullable Runnable retired,
+            long initialDelayTicks,
+            long periodTicks) {
+        if (FOLIA) {
+            return FoliaImpl.runAtEntityFixedRate(
+                    plugin, entity, task, retired, Math.max(1L, initialDelayTicks), Math.max(1L, periodTicks));
+        }
+        final BukkitTask[] holder = new BukkitTask[1];
+        TaskHandle handle = () -> {
+            if (holder[0] != null) {
+                holder[0].cancel();
+            }
+        };
+        holder[0] = Bukkit.getScheduler().runTaskTimer(
+                plugin,
+                () -> task.accept(handle),
+                Math.max(0L, initialDelayTicks),
+                Math.max(1L, periodTicks));
+        return handle;
+    }
+
+    /**
      * Runs a task asynchronously using Folia's async scheduler or Bukkit's async scheduler.
      *
      * @param plugin The owning plugin.
@@ -341,6 +379,22 @@ public final class FoliaScheduler {
                 long delayTicks) {
             ScheduledTask scheduled = entity.getScheduler()
                     .runDelayed(plugin, ignored -> task.run(), null, delayTicks);
+            return scheduled != null ? scheduled::cancel : NO_OP;
+        }
+
+        private static @NotNull TaskHandle runAtEntityFixedRate(
+                @NotNull Plugin plugin,
+                @NotNull Entity entity,
+                @NotNull Consumer<TaskHandle> task,
+                @Nullable Runnable retired,
+                long initialDelayTicks,
+                long periodTicks) {
+            ScheduledTask scheduled = entity.getScheduler().runAtFixedRate(
+                    plugin,
+                    scheduledTask -> task.accept(scheduledTask::cancel),
+                    retired,
+                    initialDelayTicks,
+                    periodTicks);
             return scheduled != null ? scheduled::cancel : NO_OP;
         }
 

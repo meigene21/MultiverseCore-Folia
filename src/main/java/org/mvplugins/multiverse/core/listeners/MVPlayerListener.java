@@ -12,7 +12,6 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.destroystokyo.paper.event.player.PlayerPostRespawnEvent;
 import com.dumptruckman.minecraft.util.Logging;
 import io.vavr.control.Option;
 import jakarta.inject.Inject;
@@ -39,9 +38,7 @@ import org.mvplugins.multiverse.core.command.MVCommandManager;
 import org.mvplugins.multiverse.core.config.CoreConfig;
 import org.mvplugins.multiverse.core.destination.DestinationInstance;
 import org.mvplugins.multiverse.core.destination.DestinationsProvider;
-import org.mvplugins.multiverse.core.dynamiclistener.EventRunnable;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.DefaultEventPriority;
-import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventClass;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventMethod;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventPriorityKey;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.IgnoreIfCancelled;
@@ -81,7 +78,7 @@ final class MVPlayerListener implements CoreListener {
     private final DimensionFinder dimensionFinder;
     private final CorePermissionsChecker corePermissionsChecker;
     private final AsyncSafetyTeleporter asyncSafetyTeleporter;
-    private final Map<UUID, String> lastDeathWorld = new ConcurrentHashMap<>();
+    private final Map<UUID, FoliaScheduler.TaskHandle> respawnWatchers = new ConcurrentHashMap<>();
 
     @Inject
     MVPlayerListener(
@@ -127,6 +124,11 @@ final class MVPlayerListener implements CoreListener {
         return getCommandManager().getLocales();
     }
 
+    /**
+     * Folia respawn watcher: upstream Folia does not reliably fire PlayerRespawnEvent or
+     * PlayerPostRespawnEvent, so we watch the dead player via EntityScheduler and move them
+     * to the configured respawn-world / world spawn the moment they come back alive.
+     */
     @EventMethod
     @DefaultEventPriority(EventPriority.MONITOR)
     void playerDeath(PlayerDeathEvent event) {
@@ -134,13 +136,84 @@ final class MVPlayerListener implements CoreListener {
             return;
         }
         Player player = event.getEntity();
-        lastDeathWorld.put(player.getUniqueId(), player.getWorld().getName());
+        UUID playerId = player.getUniqueId();
+        String deathWorldName = player.getWorld().getName();
+
+        FoliaScheduler.TaskHandle previous = respawnWatchers.remove(playerId);
+        if (previous != null) {
+            previous.cancel();
+        }
+
+        FoliaScheduler.TaskHandle handle = FoliaScheduler.runAtEntityFixedRate(
+                plugin,
+                player,
+                task -> {
+                    if (!player.isOnline()) {
+                        task.cancel();
+                        respawnWatchers.remove(playerId);
+                        return;
+                    }
+                    if (player.isDead()) {
+                        return;
+                    }
+                    task.cancel();
+                    respawnWatchers.remove(playerId);
+                    handleFoliaRespawn(player, deathWorldName);
+                },
+                () -> respawnWatchers.remove(playerId),
+                1L,
+                1L
+        );
+        respawnWatchers.put(playerId, handle);
     }
 
     @EventMethod
     @DefaultEventPriority(EventPriority.MONITOR)
     void playerQuit(PlayerQuitEvent event) {
-        lastDeathWorld.remove(event.getPlayer().getUniqueId());
+        FoliaScheduler.TaskHandle handle = respawnWatchers.remove(event.getPlayer().getUniqueId());
+        if (handle != null) {
+            handle.cancel();
+        }
+    }
+
+    private void handleFoliaRespawn(Player player, String deathWorldName) {
+        LoadedMultiverseWorld mvWorld = getWorldManager().getLoadedWorld(deathWorldName).getOrNull();
+        if (mvWorld == null) {
+            return;
+        }
+
+        Location currentLoc = player.getLocation();
+        Location personalRespawn = player.getRespawnLocation();
+        if (personalRespawn != null
+                && Objects.equals(personalRespawn.getWorld(), currentLoc.getWorld())
+                && currentLoc.distanceSquared(personalRespawn) <= 16.0) {
+            if (mvWorld.getBedRespawn() || mvWorld.getAnchorRespawn()) {
+                Logging.fine("Respecting bed/anchor respawn for %s on Folia.", player.getName());
+                return;
+            }
+        }
+
+        getRespawnWorld(mvWorld)
+                .flatMap(respawnWorld -> getMostAccurateRespawnLocation(respawnWorld, currentLoc))
+                .peek(newRespawnLocation -> {
+                    MVRespawnEvent respawnEvent = new MVRespawnEvent(newRespawnLocation, player);
+                    server.getPluginManager().callEvent(respawnEvent);
+                    if (respawnEvent.isCancelled()) {
+                        return;
+                    }
+                    Location target = respawnEvent.getRespawnLocation();
+                    if (target == null || target.getWorld() == null) {
+                        return;
+                    }
+                    if (Objects.equals(currentLoc.getWorld(), target.getWorld())
+                            && currentLoc.distanceSquared(target) <= 2.25) {
+                        return;
+                    }
+                    Logging.fine("Teleporting respawned player '%s' on Folia to '%s'.", player.getName(), target);
+                    asyncSafetyTeleporter.to(target)
+                            .checkSafety(false)
+                            .teleportSingle(player);
+                });
     }
 
     /**
@@ -185,61 +258,7 @@ final class MVPlayerListener implements CoreListener {
                     }
                     Logging.fine("Overriding respawn location for player '%s' to '%s'.", player.getName(), respawnEvent.getRespawnLocation());
                     event.setRespawnLocation(respawnEvent.getRespawnLocation());
-                    lastDeathWorld.remove(player.getUniqueId());
                 });
-    }
-
-    /**
-     * Folia fallback for respawn-world and world spawn enforcement since upstream Folia may skip
-     * PlayerRespawnEvent or ignore respawn location overrides across regions.
-     */
-    @EventClass("com.destroystokyo.paper.event.player.PlayerPostRespawnEvent")
-    EventRunnable<?> playerPostRespawn() {
-        return new EventRunnable<PlayerPostRespawnEvent>() {
-            @Override
-            public void onEvent(PlayerPostRespawnEvent event) {
-                if (!FoliaScheduler.isFolia()) {
-                    return;
-                }
-                Player player = event.getPlayer();
-                String deathWorldName = lastDeathWorld.remove(player.getUniqueId());
-                if (deathWorldName == null) {
-                    return;
-                }
-                LoadedMultiverseWorld mvWorld = getWorldManager().getLoadedWorld(deathWorldName).getOrNull();
-                if (mvWorld == null) {
-                    return;
-                }
-                if (mvWorld.getBedRespawn() && event.isBedSpawn()) {
-                    return;
-                }
-                if (mvWorld.getAnchorRespawn() && event.isAnchorSpawn()) {
-                    return;
-                }
-
-                getRespawnWorld(mvWorld)
-                        .flatMap(respawnWorld -> getMostAccurateRespawnLocation(respawnWorld, event.getRespawnedLocation()))
-                        .peek(newRespawnLocation -> {
-                            MVRespawnEvent respawnEvent = new MVRespawnEvent(newRespawnLocation, player);
-                            server.getPluginManager().callEvent(respawnEvent);
-                            if (respawnEvent.isCancelled()) {
-                                return;
-                            }
-                            Location target = respawnEvent.getRespawnLocation();
-                            if (target == null || target.getWorld() == null) {
-                                return;
-                            }
-                            FoliaScheduler.runAtEntity(plugin, player, () -> {
-                                if (!player.isOnline()) {
-                                    return;
-                                }
-                                asyncSafetyTeleporter.to(target)
-                                        .checkSafety(false)
-                                        .teleportSingle(player);
-                            });
-                        });
-            }
-        };
     }
 
     private Option<LoadedMultiverseWorld> getRespawnWorld(LoadedMultiverseWorld mvWorld) {
