@@ -18,9 +18,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 @Service
 final class WorldStore {
+
+    private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
     /**
      * Only loaded worlds, i.e. will be empty if all worlds are unloaded.
@@ -68,65 +72,94 @@ final class WorldStore {
             throw new IllegalArgumentException("Loaded world cannot be put in unloaded map");
         }
 
-        unloadedMap.put(world.getKey().toString(), world);
-        unloadedMap.put(world.getName(), world);
+        lock.writeLock().lock();
+        try {
+            unloadedMap.put(world.getKey().toString(), world);
+            unloadedMap.put(world.getName(), world);
 
-        unloadedList.add(world);
-        worldList.add(world);
+            unloadedList.add(world);
+            worldList.add(world);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     void putLoadedWorld(LoadedMultiverseWorld world) {
-        loadedMap.put(world.getKey().toString(), world);
-        loadedMap.put(world.getName(), world);
+        lock.writeLock().lock();
+        try {
+            loadedMap.put(world.getKey().toString(), world);
+            loadedMap.put(world.getName(), world);
 
-        unloadedList.remove(unloadedMap.get(world.getKey().toString()));
-        worldList.remove(unloadedMap.get(world.getKey().toString()));
+            unloadedList.remove(unloadedMap.get(world.getKey().toString()));
+            worldList.remove(unloadedMap.get(world.getKey().toString()));
 
-        loadedList.add(world);
-        worldList.add(world);
+            loadedList.add(world);
+            worldList.add(world);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     void removeWorld(MultiverseWorld world) {
-        LoadedMultiverseWorld loadedRef = loadedMap.get(world.getKey().toString());
-        MultiverseWorld unloadedRef = unloadedMap.get(world.getKey().toString());
+        lock.writeLock().lock();
+        try {
+            LoadedMultiverseWorld loadedRef = loadedMap.get(world.getKey().toString());
+            MultiverseWorld unloadedRef = unloadedMap.get(world.getKey().toString());
 
-        // remove from list
-        unloadedList.remove(unloadedRef);
-        loadedList.remove(loadedRef);
-        worldList.remove(unloadedRef);
-        worldList.remove(loadedRef);
+            // remove from list
+            unloadedList.remove(unloadedRef);
+            loadedList.remove(loadedRef);
+            worldList.remove(unloadedRef);
+            worldList.remove(loadedRef);
 
-        // remove from maps
-        loadedMap.remove(world.getKey().toString());
-        unloadedMap.remove(world.getName());
+            // remove from maps
+            loadedMap.remove(world.getKey().toString());
+            loadedMap.remove(world.getName());
 
-        unloadedMap.remove(world.getKey().toString());
-        unloadedMap.remove(world.getName());
+            unloadedMap.remove(world.getKey().toString());
+            unloadedMap.remove(world.getName());
 
-        // remove alias
-        aliasMap.remove(world.getColourlessAlias(), world.getKey().toString());
+            // remove alias
+            aliasMap.remove(world.getColourlessAlias(), world.getKey().toString());
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     void removeLoadedWorld(LoadedMultiverseWorld world) {
-        // remove from list
-        loadedList.remove(world);
-        worldList.remove(world);
+        lock.writeLock().lock();
+        try {
+            // remove from list
+            loadedList.remove(world);
+            worldList.remove(world);
 
-        // remove from maps
-        loadedMap.remove(world.getKey().toString());
-        loadedMap.remove(world.getName());
+            // remove from maps
+            loadedMap.remove(world.getKey().toString());
+            loadedMap.remove(world.getName());
 
-        // Add back unloaded
-        unloadedList.add(unloadedMap.get(world.getKey().toString()));
+            // Add back unloaded
+            MultiverseWorld unloadedRef = unloadedMap.get(world.getKey().toString());
+            if (unloadedRef != null) {
+                unloadedList.add(unloadedRef);
+                worldList.add(unloadedRef);
+            }
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     void changeLegacyWorldName(@Nullable String oldName, @Nullable String newName, @NotNull NamespacedKey worldKey) {
         if (Objects.equals(oldName, newName)) {
             return;
         }
-        String key = worldKey.toString();
-        updateLegacyWorldName(loadedMap, oldName, newName, key);
-        updateLegacyWorldName(unloadedMap, oldName, newName, key);
+        lock.writeLock().lock();
+        try {
+            String key = worldKey.toString();
+            updateLegacyWorldName(loadedMap, oldName, newName, key);
+            updateLegacyWorldName(unloadedMap, oldName, newName, key);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     private <T extends MultiverseWorld> void updateLegacyWorldName(
@@ -148,30 +181,50 @@ final class WorldStore {
             // nothing changed, ignore
             return;
         }
-        if (!Strings.isNullOrEmpty(oldAlias)) {
-            aliasMap.remove(oldAlias.toLowerCase(Locale.ROOT), worldKey.toString());
-        }
-        if (!Strings.isNullOrEmpty(newAlias)) {
-            aliasMap.put(newAlias.toLowerCase(Locale.ROOT), worldKey.toString());
+        lock.writeLock().lock();
+        try {
+            if (!Strings.isNullOrEmpty(oldAlias)) {
+                aliasMap.remove(oldAlias.toLowerCase(Locale.ROOT), worldKey.toString());
+            }
+            if (!Strings.isNullOrEmpty(newAlias)) {
+                aliasMap.put(newAlias.toLowerCase(Locale.ROOT), worldKey.toString());
+            }
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
     @Unmodifiable
     @NotNull
     List<MultiverseWorld> getWorlds() {
-        return List.copyOf(worldList);
+        lock.readLock().lock();
+        try {
+            return List.copyOf(worldList);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     @Unmodifiable
     @NotNull
     List<LoadedMultiverseWorld> getLoadedWorlds() {
-        return List.copyOf(loadedList);
+        lock.readLock().lock();
+        try {
+            return List.copyOf(loadedList);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     @Unmodifiable
     @NotNull
     List<MultiverseWorld> getUnloadedWorlds() {
-        return List.copyOf(unloadedList);
+        lock.readLock().lock();
+        try {
+            return List.copyOf(unloadedList);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     @NotNull
@@ -188,8 +241,13 @@ final class WorldStore {
 
     @NotNull
     Option<MultiverseWorld> getWorld(@Nullable String worldKeyString) {
-        return Option.of((MultiverseWorld) loadedMap.get(worldKeyString))
-                .orElse(() -> Option.of(unloadedMap.get(worldKeyString)));
+        lock.readLock().lock();
+        try {
+            return Option.of((MultiverseWorld) loadedMap.get(worldKeyString))
+                    .orElse(() -> Option.of(unloadedMap.get(worldKeyString)));
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     boolean isWorld(@Nullable WorldKeyOrName keyOrName) {
@@ -218,8 +276,13 @@ final class WorldStore {
 
     @NotNull
     Option<LoadedMultiverseWorld> getLoadedWorld(@Nullable String worldKeyString) {
-        return Option.of(loadedMap.get(worldKeyString))
-                .filter(MultiverseWorld::isLoaded);
+        lock.readLock().lock();
+        try {
+            return Option.of(loadedMap.get(worldKeyString))
+                    .filter(MultiverseWorld::isLoaded);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     boolean isLoadedWorld(@Nullable WorldKeyOrName keyOrName) {
@@ -248,8 +311,13 @@ final class WorldStore {
 
     @NotNull
     Option<MultiverseWorld> getUnloadedWorld(@Nullable String worldKeyString) {
-        return Option.of(unloadedMap.get(worldKeyString))
-                .filter(world -> !world.isLoaded());
+        lock.readLock().lock();
+        try {
+            return Option.of(unloadedMap.get(worldKeyString))
+                    .filter(world -> !world.isLoaded());
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     boolean isUnloadedWorld(@Nullable WorldKeyOrName keyOrName) {
@@ -278,7 +346,12 @@ final class WorldStore {
 
     @NotNull
     Option<MultiverseWorld> getUnloadedWorldRef(@Nullable String worldKeyString) {
-        return Option.of(unloadedMap.get(worldKeyString));
+        lock.readLock().lock();
+        try {
+            return Option.of(unloadedMap.get(worldKeyString));
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     @Nullable
@@ -286,9 +359,14 @@ final class WorldStore {
         if (Strings.isNullOrEmpty(worldNameOrAlias)) {
             return null;
         }
-        //TODO: Not sure if we should fail if there is multiple alias of the same name, but for now just return the first one
-        return aliasMap.get(worldNameOrAlias.toLowerCase(Locale.ROOT)).stream()
-                .findFirst()
-                .orElse(worldNameOrAlias);
+        lock.readLock().lock();
+        try {
+            //TODO: Not sure if we should fail if there is multiple alias of the same name, but for now just return the first one
+            return aliasMap.get(worldNameOrAlias.toLowerCase(Locale.ROOT)).stream()
+                    .findFirst()
+                    .orElse(worldNameOrAlias);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 }

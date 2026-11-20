@@ -10,6 +10,7 @@ import org.jvnet.hk2.annotations.Service;
 
 import org.mvplugins.multiverse.core.config.CoreConfig;
 import org.mvplugins.multiverse.core.permissions.CorePermissionsChecker;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
 import org.mvplugins.multiverse.core.world.WorldManager;
 
@@ -28,9 +29,9 @@ public final class EnforcementHandler {
     }
 
     /**
-     * Teleports all players to the given location.
+     * Enforces game mode for all players in the given world.
      *
-     * @param world The world to teleport players to.
+     * @param world The world to enforce game mode in.
      */
     public void handleAllGameModeEnforcement(@NotNull LoadedMultiverseWorld world) {
         if (!config.getEnforceGameMode()) {
@@ -48,17 +49,22 @@ public final class EnforcementHandler {
         if (!config.getEnforceGameMode()) {
             return;
         }
-        worldManagerProvider.get().getLoadedWorld(player.getWorld()).peek(world -> {
-            if (permissionsChecker.hasGameModeBypassPermission(player, world)) {
-                Logging.finer("Player is immune to gamemode enforcement: %s", player.getName());
+        FoliaScheduler.runAtEntityNowOrSchedule(null, player, () -> {
+            if (!player.isOnline()) {
                 return;
             }
-            Logging.finer("Handling gamemode for player in world '%s': %s, Changing to %s",
-                    world.getName(), player.getName(), world.getGameMode());
-            player.setGameMode(world.getGameMode());
-        }).onEmpty(() ->
-                Logging.fine("Player %s is not in a Multiverse world, gamemode enforcement will not apply",
-                        player.getName()));
+            worldManagerProvider.get().getLoadedWorld(player.getWorld()).peek(world -> {
+                if (permissionsChecker.hasGameModeBypassPermission(player, world)) {
+                    Logging.finer("Player is immune to gamemode enforcement: %s", player.getName());
+                    return;
+                }
+                Logging.finer("Handling gamemode for player in world '%s': %s, Changing to %s",
+                        world.getName(), player.getName(), world.getGameMode());
+                player.setGameMode(world.getGameMode());
+            }).onEmpty(() ->
+                    Logging.fine("Player %s is not in a Multiverse world, gamemode enforcement will not apply",
+                            player.getName()));
+        });
     }
 
     /**
@@ -82,29 +88,34 @@ public final class EnforcementHandler {
         if (!config.getEnforceFlight()) {
             return;
         }
-        worldManagerProvider.get().getLoadedWorld(player.getWorld()).peek(world -> {
-            if (player.getGameMode() == GameMode.SPECTATOR) {
-                // Spectators has to fly or not they will just fall to the void and die
-                player.setAllowFlight(true);
-                player.setFlying(true);
+        FoliaScheduler.runAtEntityNowOrSchedule(null, player, () -> {
+            if (!player.isOnline()) {
                 return;
             }
-
-            if (world.isAllowFlight()) {
-                if (player.getGameMode() == GameMode.CREATIVE) {
+            worldManagerProvider.get().getLoadedWorld(player.getWorld()).peek(world -> {
+                if (player.getGameMode() == GameMode.SPECTATOR) {
+                    // Spectators has to fly or not they will just fall to the void and die
                     player.setAllowFlight(true);
+                    player.setFlying(true);
+                    return;
                 }
-                return;
-            }
 
-            if (player.getAllowFlight() && player.getGameMode() != GameMode.CREATIVE) {
-                if (player.isFlying()) {
-                    player.setFlying(false);
+                if (world.isAllowFlight()) {
+                    if (player.getGameMode() == GameMode.CREATIVE) {
+                        player.setAllowFlight(true);
+                    }
+                    return;
                 }
-                player.setAllowFlight(false);
-            }
-        }).onEmpty(() ->
-                Logging.fine("Player %s is not in a Multiverse world, flight enforcement will not apply",
-                        player.getName()));
+
+                if (player.getAllowFlight() && player.getGameMode() != GameMode.CREATIVE) {
+                    if (player.isFlying()) {
+                        player.setFlying(false);
+                    }
+                    player.setAllowFlight(false);
+                }
+            }).onEmpty(() ->
+                    Logging.fine("Player %s is not in a Multiverse world, flight enforcement will not apply",
+                            player.getName()));
+        });
     }
 }

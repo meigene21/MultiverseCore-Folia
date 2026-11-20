@@ -44,6 +44,7 @@ import org.mvplugins.multiverse.core.permissions.CorePermissionsChecker;
 import org.mvplugins.multiverse.core.teleportation.AsyncSafetyTeleporter;
 import org.mvplugins.multiverse.core.teleportation.BlockSafety;
 import org.mvplugins.multiverse.core.teleportation.TeleportQueue;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.utils.result.ResultChain;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
 import org.mvplugins.multiverse.core.world.MultiverseWorld;
@@ -429,11 +430,16 @@ final class MVPlayerListener implements CoreListener {
      */
     private void handleGameModeAndFlight(final Player player, World world) {
         if (config.getGamemodeAndFlightEnforceDelay() <= 0) {
-            doGameModeAndFlightEnforcement(player, world);
+            FoliaScheduler.runAtEntityNowOrSchedule(
+                    this.plugin,
+                    player,
+                    () -> doGameModeAndFlightEnforcement(player, world)
+            );
             return;
         }
-        server.getScheduler().runTaskLater(
+        FoliaScheduler.runAtEntityDelayed(
                 this.plugin,
+                player,
                 () -> doGameModeAndFlightEnforcement(player, world),
                 config.getGamemodeAndFlightEnforceDelay()
         );

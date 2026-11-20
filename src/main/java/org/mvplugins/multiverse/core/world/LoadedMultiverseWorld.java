@@ -16,6 +16,7 @@ import org.jetbrains.annotations.NotNull;
 import org.mvplugins.multiverse.core.config.CoreConfig;
 import org.mvplugins.multiverse.core.teleportation.BlockSafety;
 import org.mvplugins.multiverse.core.teleportation.LocationManipulation;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.world.entity.EntityPurger;
 import org.mvplugins.multiverse.core.world.location.NullSpawnLocation;
 import org.mvplugins.multiverse.core.world.location.SpawnLocation;
@@ -69,6 +70,22 @@ public final class LoadedMultiverseWorld extends MultiverseWorld {
     private Location readSpawnFromWorld(World world) {
         Location location = world.getSpawnLocation();
 
+        if (FoliaScheduler.isFolia() && !FoliaScheduler.isOwnedByCurrentRegion(location)) {
+            if (this.getAdjustSpawn() && FoliaScheduler.getDefaultPlugin() != null) {
+                FoliaScheduler.runAtLocation(FoliaScheduler.getDefaultPlugin(), location, () -> {
+                    Location adjusted = resolveSafeSpawnLocation(world, location);
+                    if (!adjusted.equals(location)) {
+                        worldConfig.setSpawnLocation(new SpawnLocation(adjusted));
+                    }
+                });
+            }
+            return location;
+        }
+
+        return resolveSafeSpawnLocation(world, location);
+    }
+
+    private Location resolveSafeSpawnLocation(World world, Location location) {
         // Verify that location was safe
         if (blockSafety.canSpawnAtLocationSafely(location)) {
             return location;
@@ -86,9 +103,6 @@ public final class LoadedMultiverseWorld extends MultiverseWorld {
         Logging.warning("Spawn location from world.dat file was unsafe. Adjusting...");
         Logging.warning("Original Location: " + locationManipulation.strCoordsRaw(location));
         Location newSpawn = blockSafety.findSafeSpawnLocation(location);
-        // I think we could also do this, as I think this is what Notch does.
-        // Not sure how it will work in the nether...
-        //Location newSpawn = this.spawnLocation.getWorld().getHighestBlockAt(this.spawnLocation).getLocation();
         if (newSpawn != null) {
             Logging.info("New Spawn for '%s' is located at: %s",
                     this.getName(), locationManipulation.locationToString(newSpawn));
@@ -97,8 +111,7 @@ public final class LoadedMultiverseWorld extends MultiverseWorld {
 
         // If it's a standard end world, let's check in a better place:
         Logging.fine("Checking for a safe location using top block...");
-        Location newerSpawn;
-        newerSpawn = blockSafety.getTopBlock(new Location(world, 0, 0, 0));
+        Location newerSpawn = blockSafety.getTopBlock(new Location(world, 0, 0, 0));
         if (newerSpawn != null) {
             Logging.info("New Spawn for '%s' is located at: %s",
                     this.getName(), locationManipulation.locationToString(newerSpawn));

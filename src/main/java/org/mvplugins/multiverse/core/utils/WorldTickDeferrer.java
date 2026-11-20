@@ -4,7 +4,6 @@ import com.dumptruckman.minecraft.util.Logging;
 import io.vavr.control.Option;
 import jakarta.inject.Inject;
 import org.bukkit.Server;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.jetbrains.annotations.NotNull;
 import org.jvnet.hk2.annotations.Service;
 import org.mvplugins.multiverse.core.MultiverseCore;
@@ -39,21 +38,20 @@ public final class WorldTickDeferrer {
 
     /**
      * Defer action that cannot be done during world tick if needed.
-     * 
+     *
      * @param action The action to defer
      */
     public void deferWorldTick(Runnable action) {
+        if (FoliaScheduler.isFolia()) {
+            FoliaScheduler.runGlobalNowOrSchedule(this.plugin, action);
+            return;
+        }
         if (!isIteratingOverLevels()) {
             action.run();
             return;
         }
         Logging.fine("Deferring world tick...");
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                action.run();
-            }
-        }.runTaskLater(this.plugin, 1L);
+        FoliaScheduler.runGlobalDelayed(this.plugin, action, 1L);
     }
 
     /**

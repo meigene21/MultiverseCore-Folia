@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
@@ -54,6 +56,7 @@ import org.mvplugins.multiverse.core.utils.compatibility.WorldCreatorCompatibili
 import org.mvplugins.multiverse.core.utils.result.Attempt;
 import org.mvplugins.multiverse.core.utils.result.FailureReason;
 import org.mvplugins.multiverse.core.utils.FileUtils;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.utils.text.ChatTextFormatter;
 import org.mvplugins.multiverse.core.world.biomeprovider.BiomeProviderFactory;
 import org.mvplugins.multiverse.core.world.entity.EntityPurger;
@@ -97,8 +100,8 @@ public final class WorldManager {
     );
 
     private final WorldStore worldStore;
-    private final List<String> unloadTracker;
-    private final List<String> loadTracker;
+    private final Set<String> unloadTracker;
+    private final Set<String> loadTracker;
     private final WorldsConfigManager worldsConfigManager;
     private final WorldNameChecker worldNameChecker;
     private final BiomeProviderFactory biomeProviderFactory;
@@ -144,8 +147,8 @@ public final class WorldManager {
         this.entityPurger = entityPurger;
         this.potentialWorldFinder = potentialWorldFinder;
 
-        this.unloadTracker = new ArrayList<>();
-        this.loadTracker = new ArrayList<>();
+        this.unloadTracker = ConcurrentHashMap.newKeySet();
+        this.loadTracker = ConcurrentHashMap.newKeySet();
     }
 
     /**
@@ -1007,8 +1010,13 @@ public final class WorldManager {
             Logging.fine("Bukkit created world: " + world.getName());
             return world;
         }).onFailure(exception -> {
-            Logging.severe("Failed to create bukkit world: " + worldCreator.name());
-            exception.printStackTrace();
+            if (FoliaScheduler.isFolia() && exception instanceof UnsupportedOperationException) {
+                Logging.warning("Cannot dynamically create/load world '%s': upstream Folia does not support runtime WorldCreator#createWorld(). "
+                        + "Pre-load worlds via server startup or use a Folia fork with dynamic world API support.", worldCreator.name());
+            } else {
+                Logging.severe("Failed to create bukkit world: " + worldCreator.name());
+                exception.printStackTrace();
+            }
         }).andFinally(() -> {
             this.loadTracker.remove(worldCreator.name());
         }).fold(throwable -> Attempt.failure(WorldCreatorFailureReason.BUKKIT_CREATION_FAILED,
@@ -1033,7 +1041,16 @@ public final class WorldManager {
                 throwUnloadException(world);
             }
             Logging.fine("Bukkit unloaded world: " + world.getName());
-        }).andFinally(() -> unloadTracker.remove(world.getName()));
+        }).onFailure(exception -> {
+            if (FoliaScheduler.isFolia() && exception instanceof UnsupportedOperationException) {
+                Logging.warning("Cannot dynamically unload world '%s': upstream Folia does not support runtime Bukkit#unloadWorld().",
+                        world != null ? world.getName() : "null");
+            }
+        }).andFinally(() -> {
+            if (world != null) {
+                unloadTracker.remove(world.getName());
+            }
+        });
     }
 
     private void throwUnloadException(World world) throws MultiverseWorldException {

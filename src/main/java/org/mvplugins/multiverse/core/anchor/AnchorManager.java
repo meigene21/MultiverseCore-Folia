@@ -8,7 +8,7 @@
 package org.mvplugins.multiverse.core.anchor;
 
 import java.io.File;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -63,7 +63,7 @@ public final class AnchorManager {
         this.entryCheckerProvider = entryCheckerProvider;
         this.worldManager = worldManager;
 
-        this.anchors = new HashMap<>();
+        this.anchors = new ConcurrentHashMap<>();
     }
 
     /**

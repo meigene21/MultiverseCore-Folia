@@ -2,10 +2,8 @@ package org.mvplugins.multiverse.core.teleportation;
 
 import co.aikar.commands.BukkitCommandIssuer;
 import com.dumptruckman.minecraft.util.Logging;
-import io.papermc.lib.PaperLib;
 import io.vavr.control.Either;
 import io.vavr.control.Try;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
@@ -17,12 +15,14 @@ import org.jetbrains.annotations.Nullable;
 import org.mvplugins.multiverse.core.MultiverseCore;
 import org.mvplugins.multiverse.core.destination.DestinationInstance;
 import org.mvplugins.multiverse.core.event.MVTeleportDestinationEvent;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.utils.result.AsyncAttempt;
 import org.mvplugins.multiverse.core.utils.result.AsyncAttemptsAggregate;
 import org.mvplugins.multiverse.core.utils.result.Attempt;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Teleports one or more entity safely to a location.
@@ -73,7 +73,7 @@ public final class AsyncSafetyTeleporterAction {
      *
      * @param passengerMode The passenger mode
      * @return The same {@link AsyncSafetyTeleporterAction} to be chained
-     * 
+     *
      * @since 5.1
      */
     @ApiStatus.AvailableSince("5.1")
@@ -126,6 +126,10 @@ public final class AsyncSafetyTeleporterAction {
     public AsyncAttemptsAggregate<Void, TeleportFailureReason> teleportSingle(@NotNull Entity teleportee) {
         var localTeleporter = this.teleporter == null ? teleportee : this.teleporter;
 
+        if (FoliaScheduler.isFolia()) {
+            return teleportSingleFolia(teleportee, localTeleporter);
+        }
+
         return getLocation(teleportee).mapAttempt(this::doSafetyCheck)
                 .onSuccess(() -> {
                     if (teleportee instanceof Player player) {
@@ -141,6 +145,76 @@ public final class AsyncSafetyTeleporterAction {
                         this.teleportQueue.popFromQueue(player.getName());
                     }
                 });
+    }
+
+    private AsyncAttemptsAggregate<Void, TeleportFailureReason> teleportSingleFolia(
+            @NotNull Entity teleportee,
+            @NotNull CommandSender localTeleporter) {
+        Attempt<Location, TeleportFailureReason> rawLocationAttempt = getLocation(teleportee);
+        if (rawLocationAttempt.isFailure()) {
+            return AsyncAttemptsAggregate.allOf(AsyncAttempt.fromAttempt(rawLocationAttempt.map(ignored -> null)));
+        }
+
+        Location rawLocation = rawLocationAttempt.get();
+        CompletableFuture<Attempt<Void, TeleportFailureReason>> resultFuture = doSafetyCheckAsync(rawLocation)
+                .thenCompose(safeAttempt -> {
+                    if (safeAttempt.isFailure()) {
+                        return CompletableFuture.completedFuture(safeAttempt.map(ignored -> null));
+                    }
+                    Location safeLocation = safeAttempt.get();
+                    if (teleportee instanceof Player player) {
+                        this.teleportQueue.addToQueue(localTeleporter, player);
+                    }
+                    CompletableFuture<Attempt<Void, TeleportFailureReason>> teleportFuture = new CompletableFuture<>();
+                    FoliaScheduler.runAtEntityNowOrSchedule(multiverseCore, teleportee, () -> {
+                        if (!teleportee.isValid()) {
+                            teleportFuture.complete(Attempt.failure(TeleportFailureReason.TELEPORT_FAILED));
+                            return;
+                        }
+                        try {
+                            AsyncAttemptsAggregate<Void, TeleportFailureReason> aggregate =
+                                    doAsyncTeleport(teleportee, safeLocation);
+                            aggregate.onSuccess(() -> teleportFuture.complete(Attempt.success(null)))
+                                    .onFailure(failures -> {
+                                        if (!failures.isEmpty()) {
+                                            teleportFuture.complete(failures.get(0));
+                                        } else {
+                                            teleportFuture.complete(Attempt.failure(TeleportFailureReason.TELEPORT_FAILED));
+                                        }
+                                    });
+                        } catch (Throwable ex) {
+                            Logging.warning("Failed to initiate Folia teleport for %s to %s: %s",
+                                    teleportee.getName(), safeLocation, ex.getMessage());
+                            teleportFuture.complete(Attempt.failure(TeleportFailureReason.TELEPORT_FAILED_EXCEPTION));
+                        }
+                    });
+                    return teleportFuture.whenComplete((ignoredResult, ignoredEx) -> {
+                        if (teleportee instanceof Player player) {
+                            this.teleportQueue.popFromQueue(player.getName());
+                        }
+                    });
+                });
+
+        AsyncAttempt<Attempt<Void, TeleportFailureReason>, TeleportFailureReason> wrapped = AsyncAttempt.of(
+                resultFuture,
+                ex -> Attempt.failure(TeleportFailureReason.TELEPORT_FAILED_EXCEPTION));
+        return AsyncAttemptsAggregate.allOf(wrapped.mapAttempt(attempt -> attempt));
+    }
+
+    private CompletableFuture<Attempt<Location, TeleportFailureReason>> doSafetyCheckAsync(@NotNull Location location) {
+        if (!this.checkSafety || FoliaScheduler.isOwnedByCurrentRegion(location)) {
+            return CompletableFuture.completedFuture(doSafetyCheck(location));
+        }
+        CompletableFuture<Attempt<Location, TeleportFailureReason>> future = new CompletableFuture<>();
+        FoliaScheduler.runAtLocation(multiverseCore, location, () -> {
+            try {
+                future.complete(doSafetyCheck(location));
+            } catch (Throwable ex) {
+                Logging.warning("Failed to check block safety at %s: %s", location, ex.getMessage());
+                future.complete(Attempt.failure(TeleportFailureReason.TELEPORT_FAILED_EXCEPTION));
+            }
+        });
+        return future;
     }
 
     /**
@@ -244,8 +318,11 @@ public final class AsyncSafetyTeleporterAction {
         return AsyncAttemptsAggregate.allOfAggregate(toTeleport.stream()
                         .map(passenger -> doAsyncTeleport(passenger, location))
                         .toList())
-                .onSuccess(() -> Bukkit.getScheduler().runTask(multiverseCore, () -> {
-                    passengers.forEach(teleportee::addPassenger);
+                .onSuccess(() -> FoliaScheduler.runAtEntity(multiverseCore, teleportee, () -> {
+                    if (!teleportee.isValid()) {
+                        return;
+                    }
+                    passengers.stream().filter(Entity::isValid).forEach(teleportee::addPassenger);
                     Logging.finer("Mounted %d passengers to %s", passengers.size(), teleportee.getName());
                 }));
     }
@@ -254,7 +331,7 @@ public final class AsyncSafetyTeleporterAction {
             @NotNull Entity teleportee,
             @NotNull Location location
     ) {
-        return AsyncAttempt.of(PaperLib.teleportAsync(teleportee, location), exception -> {
+        return AsyncAttempt.of(FoliaScheduler.teleportAsync(teleportee, location), exception -> {
             Logging.warning("Failed to teleport %s to %s: %s",
                     teleportee.getName(), location, exception.getMessage());
             return Attempt.failure(TeleportFailureReason.TELEPORT_FAILED_EXCEPTION);
@@ -273,6 +350,10 @@ public final class AsyncSafetyTeleporterAction {
     private void applyPostTeleportVelocity(@NotNull Entity teleportee) {
         locationOrDestination.peek(destination ->
                 destination.getVelocity(teleportee).peek(velocity ->
-                        Bukkit.getScheduler().runTaskLater(multiverseCore, () -> teleportee.setVelocity(velocity), 1L)));
+                        FoliaScheduler.runAtEntityDelayed(multiverseCore, teleportee, () -> {
+                            if (teleportee.isValid()) {
+                                teleportee.setVelocity(velocity);
+                            }
+                        }, 1L)));
     }
 }

@@ -30,6 +30,7 @@ import org.mvplugins.multiverse.core.economy.MVEconomist;
 import org.mvplugins.multiverse.core.exceptions.MultiverseException;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.Message;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.utils.MaterialConverter;
 import org.mvplugins.multiverse.core.utils.text.ChatTextFormatter;
 import org.mvplugins.multiverse.core.world.helpers.AliasNameConflictChecker;
@@ -48,6 +49,7 @@ final class WorldConfigNodes {
     private static final double CONFIG_VERSION = 1.0;
 
     private final NodeGroup nodes = new NodeGroup();
+    private final MultiverseCore multiverseCore;
     private WorldManager worldManager;
     private EnforcementHandler enforcementHandler;
     private CoreConfig config;
@@ -57,6 +59,7 @@ final class WorldConfigNodes {
     private MultiverseWorld world = null;
 
     WorldConfigNodes(@NotNull MultiverseCore multiverseCore, @NotNull WorldKeyOrName keyOrName) {
+        this.multiverseCore = multiverseCore;
         this.worldManager = multiverseCore.getServiceLocator().getService(WorldManager.class);
         this.enforcementHandler = multiverseCore.getServiceLocator().getService(EnforcementHandler.class);
         this.config = multiverseCore.getServiceLocator().getService(CoreConfig.class);
@@ -133,12 +136,12 @@ final class WorldConfigNodes {
             .defaultValue(true)
             .onLoadAndChange((oldValue, newValue) -> {
                 if (!(world instanceof LoadedMultiverseWorld loadedWorld)) return;
-                loadedWorld.getBukkitWorld().peek(world -> {
+                loadedWorld.getBukkitWorld().peek(world -> FoliaScheduler.runGlobalNowOrSchedule(multiverseCore, () -> {
                     if (!world.isClearWeather() && !newValue) {
                         world.setThundering(false);
                         world.setStorm(false);
                     }
-                });
+                }));
             }));
 
     final ConfigNode<Boolean> anchorRespawn = node(ConfigNode.builder("anchor-respawn", Boolean.class)
@@ -161,7 +164,7 @@ final class WorldConfigNodes {
             .defaultValue(Difficulty.NORMAL)
             .onLoadAndChange((oldValue, newValue) -> {
                 if (!(world instanceof LoadedMultiverseWorld loadedWorld)) return;
-                loadedWorld.getBukkitWorld().peek(bukkitWorld -> bukkitWorld.setDifficulty(newValue));
+                loadedWorld.getBukkitWorld().peek(bukkitWorld -> FoliaScheduler.runGlobalNowOrSchedule(multiverseCore, () -> bukkitWorld.setDifficulty(newValue)));
             }));
 
     final ConfigNode<Boolean> entryFeeEnabled = node(ConfigNode.builder("entry-fee.enabled", Boolean.class)
@@ -233,13 +236,13 @@ final class WorldConfigNodes {
             .defaultValue(true)
             .onLoadAndChange((sender, oldValue, newValue) -> {
                 if (!(world instanceof LoadedMultiverseWorld loadedWorld)) return;
-                loadedWorld.getBukkitWorld().peek(bukkitWorld -> {
+                loadedWorld.getBukkitWorld().peek(bukkitWorld -> FoliaScheduler.runGlobalNowOrSchedule(multiverseCore, () -> {
                     bukkitWorld.setKeepSpawnInMemory(newValue);
                     if (bukkitWorld.getKeepSpawnInMemory() != newValue) {
                         sender.sendMessage(ChatColor.RED + "Keep spawn in memory feature has been removed by " +
                                 "Minecraft in 1.21.9+ and will no longer have any effect when set to true.");
                     }
-                });
+                }));
             }));
 
     final MapConfigNode<String, String> meta = (MapConfigNode<String, String>) node(MapConfigNode
@@ -257,7 +260,7 @@ final class WorldConfigNodes {
             .defaultValue(true)
             .onLoadAndChange((oldValue, newValue) -> {
                 if (!(world instanceof LoadedMultiverseWorld loadedWorld)) return;
-                loadedWorld.getBukkitWorld().peek(bukkitWorld -> bukkitWorld.setPVP(newValue));
+                loadedWorld.getBukkitWorld().peek(bukkitWorld -> FoliaScheduler.runGlobalNowOrSchedule(multiverseCore, () -> bukkitWorld.setPVP(newValue)));
             }));
 
     final ConfigNode<String> respawnWorld = node(ConfigNode.builder("respawn-world", String.class)
@@ -285,7 +288,7 @@ final class WorldConfigNodes {
                 if (newValue == null || newValue instanceof NullSpawnLocation) return;
                 loadedWorld.getBukkitWorld().peek(bukkitWorld -> {
                     newValue.setWorld(bukkitWorld);
-                    bukkitWorld.setSpawnLocation(newValue);
+                    FoliaScheduler.runGlobalNowOrSchedule(multiverseCore, () -> bukkitWorld.setSpawnLocation(newValue));
                 });
             }));
 

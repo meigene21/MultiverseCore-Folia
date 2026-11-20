@@ -37,6 +37,7 @@ import org.mvplugins.multiverse.core.display.parsers.MapContentProvider;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.Message;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
 
 import static org.mvplugins.multiverse.core.locale.message.MessageReplacement.replace;
@@ -76,7 +77,24 @@ class GameruleCommand extends CoreCommand {
         for (LoadedMultiverseWorld world : worlds) {
             // Set gamerules and add false to list if it fails
             World bukkitWorld = world.getBukkitWorld().getOrNull();
-            if (bukkitWorld == null || !bukkitWorld.setGameRule(gamerule, value)) {
+            if (bukkitWorld == null) {
+                issuer.sendError(MVCorei18n.GAMERULE_SET_FAILED,
+                        Replace.GAMERULE.with(gamerule.getName()),
+                        Replace.VALUE.with(value.toString()),
+                        Replace.WORLD.with(world.getName()),
+                        replace("{type}").with(gamerule.getType().getName()));
+                success = false;
+            } else if (FoliaScheduler.isFolia() && !FoliaScheduler.isGlobalTickThread()) {
+                FoliaScheduler.runGlobalNowOrSchedule(null, () -> {
+                    if (!bukkitWorld.setGameRule(gamerule, value)) {
+                        issuer.sendError(MVCorei18n.GAMERULE_SET_FAILED,
+                                Replace.GAMERULE.with(gamerule.getName()),
+                                Replace.VALUE.with(value.toString()),
+                                Replace.WORLD.with(world.getName()),
+                                replace("{type}").with(gamerule.getType().getName()));
+                    }
+                });
+            } else if (!bukkitWorld.setGameRule(gamerule, value)) {
                 issuer.sendError(MVCorei18n.GAMERULE_SET_FAILED,
                         Replace.GAMERULE.with(gamerule.getName()),
                         Replace.VALUE.with(value.toString()),
@@ -122,7 +140,13 @@ class GameruleCommand extends CoreCommand {
         Arrays.stream(worlds)
                 .forEach(world -> world.getBukkitWorld()
                         .flatMap(bukkitWorld -> Option.of(bukkitWorld.getGameRuleDefault(gamerule))
-                                .map(value -> bukkitWorld.setGameRule(gamerule, value)))
+                                .map(value -> {
+                                    if (FoliaScheduler.isFolia() && !FoliaScheduler.isGlobalTickThread()) {
+                                        FoliaScheduler.runGlobalNowOrSchedule(null, () -> bukkitWorld.setGameRule(gamerule, value));
+                                        return true;
+                                    }
+                                    return bukkitWorld.setGameRule(gamerule, value);
+                                }))
                         .onEmpty(() -> {
                             success.set(false);
                             issuer.sendError(MVCorei18n.GAMERULE_RESET_FAILED,

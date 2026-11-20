@@ -28,6 +28,7 @@ import org.mvplugins.multiverse.core.economy.MVEconomist;
 import org.mvplugins.multiverse.core.listeners.CoreListener;
 import org.mvplugins.multiverse.core.inject.PluginServiceLocatorFactory;
 import org.mvplugins.multiverse.core.module.MultiverseModule;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.utils.StringFormatter;
 import org.mvplugins.multiverse.core.world.WorldManager;
 import org.mvplugins.multiverse.core.world.entity.SpawnCategoryMapper;
@@ -63,6 +64,7 @@ public class MultiverseCore extends MultiverseModule {
 
     @Override
     public void onLoad() {
+        FoliaScheduler.setDefaultPlugin(this);
         // Setup our Logging
         Logging.init(this);
 
@@ -85,6 +87,7 @@ public class MultiverseCore extends MultiverseModule {
     @Override
     public void onEnable() {
         super.onEnable();
+        FoliaScheduler.setDefaultPlugin(this);
         initializeDependencyInjection(new MultiverseCorePluginBinder(this));
 
         // Load our configs first as we need them for everything else.
@@ -128,6 +131,7 @@ public class MultiverseCore extends MultiverseModule {
     @Override
     public void onDisable() {
         super.onDisable();
+        FoliaScheduler.setDefaultPlugin(null);
         MultiverseCoreApi.shutdown();
         shutdownDependencyInjection();
         PluginServiceLocatorFactory.get().shutdown();
@@ -233,6 +237,9 @@ public class MultiverseCore extends MultiverseModule {
     private void logEnableMessage() {
         Logging.config("\u001B[32mVersion %s (API v%s) Enabled - By %s\u001B[0m",
                 this.getDescription().getVersion(), getVersionAsNumber(), StringFormatter.joinAnd(getDescription().getAuthors()));
+        if (FoliaScheduler.isFolia()) {
+            Logging.info("Folia regionized multithreading detected - running in Folia-compatible scheduler mode.");
+        }
 
         if (configProvider.get().isShowingDonateMessage()) {
             Logging.config("\u001B[32mLoving Multiverse-Core? Please consider supporting the project with a " +
