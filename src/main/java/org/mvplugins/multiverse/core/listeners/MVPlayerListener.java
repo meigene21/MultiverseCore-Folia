@@ -7,8 +7,12 @@
 
 package org.mvplugins.multiverse.core.listeners;
 
+import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
+import com.destroystokyo.paper.event.player.PlayerPostRespawnEvent;
 import com.dumptruckman.minecraft.util.Logging;
 import io.vavr.control.Option;
 import jakarta.inject.Inject;
@@ -20,9 +24,11 @@ import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerPortalEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.Plugin;
@@ -33,7 +39,9 @@ import org.mvplugins.multiverse.core.command.MVCommandManager;
 import org.mvplugins.multiverse.core.config.CoreConfig;
 import org.mvplugins.multiverse.core.destination.DestinationInstance;
 import org.mvplugins.multiverse.core.destination.DestinationsProvider;
+import org.mvplugins.multiverse.core.dynamiclistener.EventRunnable;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.DefaultEventPriority;
+import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventClass;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventMethod;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventPriorityKey;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.IgnoreIfCancelled;
@@ -73,6 +81,7 @@ final class MVPlayerListener implements CoreListener {
     private final DimensionFinder dimensionFinder;
     private final CorePermissionsChecker corePermissionsChecker;
     private final AsyncSafetyTeleporter asyncSafetyTeleporter;
+    private final Map<UUID, String> lastDeathWorld = new ConcurrentHashMap<>();
 
     @Inject
     MVPlayerListener(
@@ -118,6 +127,22 @@ final class MVPlayerListener implements CoreListener {
         return getCommandManager().getLocales();
     }
 
+    @EventMethod
+    @DefaultEventPriority(EventPriority.MONITOR)
+    void playerDeath(PlayerDeathEvent event) {
+        if (!FoliaScheduler.isFolia()) {
+            return;
+        }
+        Player player = event.getEntity();
+        lastDeathWorld.put(player.getUniqueId(), player.getWorld().getName());
+    }
+
+    @EventMethod
+    @DefaultEventPriority(EventPriority.MONITOR)
+    void playerQuit(PlayerQuitEvent event) {
+        lastDeathWorld.remove(event.getPlayer().getUniqueId());
+    }
+
     /**
      * This method is called when a player respawns.
      *
@@ -160,7 +185,61 @@ final class MVPlayerListener implements CoreListener {
                     }
                     Logging.fine("Overriding respawn location for player '%s' to '%s'.", player.getName(), respawnEvent.getRespawnLocation());
                     event.setRespawnLocation(respawnEvent.getRespawnLocation());
+                    lastDeathWorld.remove(player.getUniqueId());
                 });
+    }
+
+    /**
+     * Folia fallback for respawn-world and world spawn enforcement since upstream Folia may skip
+     * PlayerRespawnEvent or ignore respawn location overrides across regions.
+     */
+    @EventClass("com.destroystokyo.paper.event.player.PlayerPostRespawnEvent")
+    EventRunnable<?> playerPostRespawn() {
+        return new EventRunnable<PlayerPostRespawnEvent>() {
+            @Override
+            public void onEvent(PlayerPostRespawnEvent event) {
+                if (!FoliaScheduler.isFolia()) {
+                    return;
+                }
+                Player player = event.getPlayer();
+                String deathWorldName = lastDeathWorld.remove(player.getUniqueId());
+                if (deathWorldName == null) {
+                    return;
+                }
+                LoadedMultiverseWorld mvWorld = getWorldManager().getLoadedWorld(deathWorldName).getOrNull();
+                if (mvWorld == null) {
+                    return;
+                }
+                if (mvWorld.getBedRespawn() && event.isBedSpawn()) {
+                    return;
+                }
+                if (mvWorld.getAnchorRespawn() && event.isAnchorSpawn()) {
+                    return;
+                }
+
+                getRespawnWorld(mvWorld)
+                        .flatMap(respawnWorld -> getMostAccurateRespawnLocation(respawnWorld, event.getRespawnedLocation()))
+                        .peek(newRespawnLocation -> {
+                            MVRespawnEvent respawnEvent = new MVRespawnEvent(newRespawnLocation, player);
+                            server.getPluginManager().callEvent(respawnEvent);
+                            if (respawnEvent.isCancelled()) {
+                                return;
+                            }
+                            Location target = respawnEvent.getRespawnLocation();
+                            if (target == null || target.getWorld() == null) {
+                                return;
+                            }
+                            FoliaScheduler.runAtEntity(plugin, player, () -> {
+                                if (!player.isOnline()) {
+                                    return;
+                                }
+                                asyncSafetyTeleporter.to(target)
+                                        .checkSafety(false)
+                                        .teleportSingle(player);
+                            });
+                        });
+            }
+        };
     }
 
     private Option<LoadedMultiverseWorld> getRespawnWorld(LoadedMultiverseWorld mvWorld) {

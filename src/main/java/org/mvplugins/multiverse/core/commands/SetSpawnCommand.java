@@ -20,6 +20,7 @@ import org.mvplugins.multiverse.core.command.flags.UnsafeFlags;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.teleportation.BlockSafety;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.world.WorldManager;
 
 @Service
@@ -56,11 +57,28 @@ class SetSpawnCommand extends CoreCommand {
         ParsedCommandFlags parsedFlags = flags.parse(flagArray);
         Location location = playerLocation.value();
 
-        if (!parsedFlags.hasFlag(flags.unsafe) && !blockSafety.canSpawnAtLocationSafely(location)) {
-            issuer.sendMessage(MVCorei18n.SETSPAWN_UNSAFE);
-            return;
+        if (!parsedFlags.hasFlag(flags.unsafe)) {
+            if (FoliaScheduler.isFolia() && !FoliaScheduler.isOwnedByCurrentRegion(location)
+                    && FoliaScheduler.getDefaultPlugin() != null) {
+                FoliaScheduler.runAtLocation(FoliaScheduler.getDefaultPlugin(), location, () -> {
+                    if (!blockSafety.canSpawnAtLocationSafely(location)) {
+                        issuer.sendMessage(MVCorei18n.SETSPAWN_UNSAFE);
+                        return;
+                    }
+                    applySetSpawn(issuer, location);
+                });
+                return;
+            }
+            if (!blockSafety.canSpawnAtLocationSafely(location)) {
+                issuer.sendMessage(MVCorei18n.SETSPAWN_UNSAFE);
+                return;
+            }
         }
 
+        applySetSpawn(issuer, location);
+    }
+
+    private void applySetSpawn(MVCommandIssuer issuer, Location location) {
         worldManager.getLoadedWorld(location.getWorld())
                 .peek(mvWorld -> mvWorld.setSpawnLocation(location)
                         .andThenTry(worldManager::saveWorldsConfig)

@@ -12,6 +12,7 @@ import org.jvnet.hk2.annotations.Service;
 import org.mvplugins.multiverse.core.command.MVCommandIssuer;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.utils.compatibility.WorldBorderCompatibility;
 import org.mvplugins.multiverse.core.utils.tick.TickDuration;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
@@ -235,7 +236,8 @@ final class WorldBorderCommand extends CoreCommand {
     }
 
     private void worldBorderAction(MVCommandIssuer issuer, LoadedMultiverseWorld world, Consumer<WorldBorder> worldBorderAction) {
-        Try.run(() -> world.getWorldBorder().peek(worldBorderAction))
-                .onFailure(error -> issuer.sendError(MVCorei18n.GENERIC_ERROR_DETAILS, Replace.ERROR.with(error)));
+        FoliaScheduler.runGlobalNowOrSchedule(null, () ->
+                Try.run(() -> world.getWorldBorder().peek(worldBorderAction))
+                        .onFailure(error -> issuer.sendError(MVCorei18n.GENERIC_ERROR_DETAILS, Replace.ERROR.with(error))));
     }
 }
