@@ -22,6 +22,7 @@ import org.mvplugins.multiverse.core.config.node.serializer.NodeSerializer;
 import org.mvplugins.multiverse.core.exceptions.MultiverseException;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.Message;
+import org.mvplugins.multiverse.core.utils.FoliaScheduler;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
 import org.mvplugins.multiverse.core.world.MultiverseWorld;
 
@@ -73,10 +74,10 @@ public final class SpawnCategoryConfig {
         if (!(world instanceof LoadedMultiverseWorld loadedWorld)) {
             return;
         }
-        loadedWorld.getBukkitWorld().peek(bukkitWorld -> {
+        loadedWorld.getBukkitWorld().peek(bukkitWorld -> FoliaScheduler.runGlobalNowOrSchedule(null, () -> {
             applyTickPerSpawns(bukkitWorld);
             applySpawnLimit(bukkitWorld);
-        });
+        }));
     }
 
     private void applyTickPerSpawns(@NotNull World bukkitWorld) {
