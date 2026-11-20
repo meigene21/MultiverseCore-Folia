@@ -49,7 +49,7 @@ final class WorldConfigNodes {
     private static final double CONFIG_VERSION = 1.0;
 
     private final NodeGroup nodes = new NodeGroup();
-    private final MultiverseCore multiverseCore;
+    private MultiverseCore multiverseCore;
     private WorldManager worldManager;
     private EnforcementHandler enforcementHandler;
     private CoreConfig config;
